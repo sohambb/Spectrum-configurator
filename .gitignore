@@ -20,3 +20,6 @@ npm-debug.log*
 
 # Library crate lockfile (the app has its own)
 crates/**/Cargo.lock
+
+# Claude Code local settings (may hold secrets)
+.claude/settings.local.json
