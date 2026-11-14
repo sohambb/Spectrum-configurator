@@ -569,11 +569,15 @@ impl ProcessChecker for SystemProcessChecker {
         let tasklist = std::env::var_os("SystemRoot")
             .map(|root| std::path::PathBuf::from(root).join("System32").join("tasklist.exe"))
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\tasklist.exe"));
-        let output = std::process::Command::new(tasklist)
-            .arg("/FO")
-            .arg("CSV")
-            .arg("/NH")
-            .output();
+        let mut command = std::process::Command::new(tasklist);
+        command.arg("/FO").arg("CSV").arg("/NH");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: without it, Windows flashes a console window on every Apply.
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command.output();
 
         if let Ok(out) = output {
             let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
