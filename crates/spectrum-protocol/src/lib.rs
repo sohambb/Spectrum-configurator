@@ -565,7 +565,11 @@ pub struct SystemProcessChecker;
 
 impl ProcessChecker for SystemProcessChecker {
     fn is_process_running(&self, process_names: &[&str]) -> Option<String> {
-        let output = std::process::Command::new("tasklist")
+        // Use the full path so a different "tasklist" earlier on PATH cannot be run instead.
+        let tasklist = std::env::var_os("SystemRoot")
+            .map(|root| std::path::PathBuf::from(root).join("System32").join("tasklist.exe"))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\tasklist.exe"));
+        let output = std::process::Command::new(tasklist)
             .arg("/FO")
             .arg("CSV")
             .arg("/NH")
