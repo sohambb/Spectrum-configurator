@@ -1,6 +1,6 @@
 [package]
 name = "spectrum-configurator"
-version = "1.0.0"
+version = "1.0.1"
 description = "Configuration app for the Cosmic Byte Spectrum mouse"
 authors = ["sohambb"]
 license = "MIT"
