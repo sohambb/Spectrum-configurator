@@ -69,7 +69,7 @@ test('polling, DPI and lighting go out together in one hid_apply_settings call',
 test('a safety refusal from Rust is reported as refused, not as a failed write', async () => {
   const bridge = fakeTauri((cmd) => {
     if (cmd === 'hid_scan_devices') return [MOUSE];
-    if (cmd === 'hid_apply_settings') throw new Error('Refusing: the vendor app is running');
+    if (cmd === 'hid_apply_settings') throw new Error('NOT_SENT: Refusing write: the vendor app is running');
     return null;
   });
   try {
@@ -77,6 +77,23 @@ test('a safety refusal from Rust is reported as refused, not as a failed write',
     await mouse.connect();
     const res = await mouse.applyConfig(DEFAULT_PROFILE);
     assert.equal(res.status, 'refused');
+    assert.match(res.message, /^Nothing was sent: Refusing write/);
+  } finally {
+    bridge.restore();
+  }
+});
+
+test('an error without the not-sent marker is treated as a failed write', async () => {
+  const bridge = fakeTauri((cmd) => {
+    if (cmd === 'hid_scan_devices') return [MOUSE];
+    if (cmd === 'hid_apply_settings') throw new Error('Send failed at packet #50: device unplugged');
+    return null;
+  });
+  try {
+    const mouse = new SpectrumAdapter();
+    await mouse.connect();
+    const res = await mouse.applyConfig(DEFAULT_PROFILE);
+    assert.equal(res.status, 'error');
   } finally {
     bridge.restore();
   }

@@ -4,6 +4,8 @@ import { HidDeviceInfo } from '../types/hid';
 import { dpiSendProblems } from '../protocol/dpiSend';
 import { VENDOR_EFFECTS, toVendorLighting } from '../protocol/lighting';
 
+const NOT_SENT_PREFIX = 'NOT_SENT: ';
+
 /*
  * Talks to the real Cosmic Byte Spectrum through the Rust side of the app.
  *
@@ -115,18 +117,13 @@ export class SpectrumAdapter implements DeviceAdapter {
       }
     }
 
-    const res = combined
-      ? await callRust<number>('hid_apply_settings', {
-          path: this.activeDevice?.path ?? '',
-          pollingHz: config.polling_rate,
-          dpiValues: sendDpi ? dpiValues : null,
-          activeStage: sendDpi ? config.active_dpi_stage : null,
-          lighting,
-        })
-      : await callRust<number>('hid_set_polling_rate', {
-          path: this.activeDevice?.path ?? '',
-          rateHz: config.polling_rate,
-        });
+    const res = await callRust<number>('hid_apply_settings', {
+      path: this.activeDevice?.path ?? '',
+      pollingHz: config.polling_rate,
+      dpiValues: sendDpi ? dpiValues : null,
+      activeStage: sendDpi ? config.active_dpi_stage : null,
+      lighting,
+    });
 
     if (!res.available) {
       return { success: false, status: 'error', message: 'The app could not reach its Rust side.', warnings: notSent };
@@ -148,9 +145,9 @@ export class SpectrumAdapter implements DeviceAdapter {
     }
 
     const error = res.error;
-    // These messages come from checks that run before the first packet is sent.
-    if (/^Refusing|drift detected|Pre-send|Invalid|Unsupported|out of range|Exactly 6|device path|not found/i.test(error)) {
-      return { success: false, status: 'refused', message: `Nothing was sent: ${error}`, warnings: [] };
+    // The Rust side starts every error from before the first packet with this marker.
+    if (error.startsWith(NOT_SENT_PREFIX)) {
+      return { success: false, status: 'refused', message: `Nothing was sent: ${error.slice(NOT_SENT_PREFIX.length)}`, warnings: [] };
     }
     return {
       success: false,

@@ -1,7 +1,7 @@
 // The mouse's own lighting effects and how app settings map to its bytes.
 import type { RgbConfig, RgbEffect } from '../types/config';
 
-export interface VendorEffect {
+interface VendorEffect {
   id: number;
   name: string;
   speed: boolean;
@@ -30,7 +30,7 @@ export const VENDOR_EFFECTS: VendorEffect[] = [
 
 export const LED_OFF = 13;
 
-export interface VendorLighting {
+interface VendorLighting {
   effect: number;
   speed: number;
   brightness: number;

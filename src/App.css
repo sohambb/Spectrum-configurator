@@ -126,8 +126,6 @@ code { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12p
 .photo { position: relative; width: 172px; aspect-ratio: 372 / 640; }
 .photo > * { position: absolute; inset: 0; width: 100%; height: 100%; }
 .photo-img { object-fit: contain; z-index: 1; filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.3)); }
-.photo-art { position: relative; width: 100%; }
-.photo-art svg { width: 100%; height: auto; display: block; }
 .light { overflow: hidden; opacity: var(--alpha); transition: opacity 0.4s; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
 .light-edge { -webkit-mask-image: url('/mouse-glow.png'); mask-image: url('/mouse-glow.png'); }
 .light-logo { z-index: 2; -webkit-mask-image: url('/mouse-logo.png'); mask-image: url('/mouse-logo.png'); mix-blend-mode: screen; }

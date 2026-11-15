@@ -83,29 +83,6 @@ impl<'a, D: DeviceDescriptor> DeviceDescriptor for &'a D {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MockDeviceDescriptor {
-    pub vendor_id: u16,
-    pub product_id: u16,
-    pub usage_page: u16,
-    pub path: String,
-}
-
-impl DeviceDescriptor for MockDeviceDescriptor {
-    fn vendor_id(&self) -> u16 {
-        self.vendor_id
-    }
-    fn product_id(&self) -> u16 {
-        self.product_id
-    }
-    fn usage_page(&self) -> u16 {
-        self.usage_page
-    }
-    fn path_str(&self) -> String {
-        self.path.clone()
-    }
-}
-
 pub fn is_target_spectrum_device<D: DeviceDescriptor>(device: &D) -> bool {
     device.vendor_id() == TARGET_VID
         && device.product_id() == TARGET_PID
@@ -380,12 +357,6 @@ pub fn apply_lighting_to_image(image: &mut BTreeMap<u16, u8>, l: &LightingSettin
     Ok(())
 }
 
-pub fn generate_polling_packets(
-    target_rate: PollingRate,
-) -> Result<Vec<Vec<u8>>, String> {
-    generate_packets(target_rate, None, None)
-}
-
 /// Builds the full-image rewrite. It starts from the factory image, so every setting
 /// not given here is reset to its factory value.
 pub fn generate_packets(
@@ -502,61 +473,6 @@ impl<'a> HidTransport for RealHidTransport<'a> {
     }
 }
 
-pub struct MockTransport {
-    pub sent_packets: Vec<Vec<u8>>,
-    pub get_feature_responses: Vec<Vec<u8>>,
-    pub get_feature_calls: usize,
-    pub fail_at_send_index: Option<usize>,
-}
-
-impl MockTransport {
-    pub fn new() -> Self {
-        Self {
-            sent_packets: Vec::new(),
-            get_feature_responses: Vec::new(),
-            get_feature_calls: 0,
-            fail_at_send_index: None,
-        }
-    }
-
-    pub fn with_default_response(payload: Vec<u8>) -> Self {
-        let mut m = Self::new();
-        m.get_feature_responses.push(payload);
-        m
-    }
-}
-
-impl Default for MockTransport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HidTransport for MockTransport {
-    fn send_feature_report(&mut self, data: &[u8]) -> Result<(), String> {
-        if let Some(idx) = self.fail_at_send_index {
-            if self.sent_packets.len() == idx {
-                return Err("Simulated OS write failure: Windows error 31 (ERROR_GEN_FAILURE)".to_string());
-            }
-        }
-        self.sent_packets.push(data.to_vec());
-        Ok(())
-    }
-
-    fn get_feature_report(&mut self, _report_id: u8, buf: &mut [u8]) -> Result<usize, String> {
-        let resp = if !self.get_feature_responses.is_empty() {
-            let idx = self.get_feature_calls.min(self.get_feature_responses.len() - 1);
-            self.get_feature_responses[idx].clone()
-        } else {
-            vec![0x07, 0x00, 0x68, 0x09, 0x54, 0x00, 0x03, 0xAB, 0xA2]
-        };
-        self.get_feature_calls += 1;
-        let copy_len = buf.len().min(resp.len());
-        buf[..copy_len].copy_from_slice(&resp[..copy_len]);
-        Ok(copy_len)
-    }
-}
-
 pub trait ProcessChecker {
     fn is_process_running(&self, process_names: &[&str]) -> Option<String>;
 }
@@ -592,25 +508,14 @@ impl ProcessChecker for SystemProcessChecker {
     }
 }
 
-/// Guarded polling-rate-only write. Same checks as `apply_settings`.
-pub fn apply_polling<T: HidTransport, P: ProcessChecker>(
-    transport: &mut T,
-    process_checker: &P,
-    rate: PollingRate,
-) -> Result<usize, String> {
-    apply_settings(transport, process_checker, rate, None, None)
-}
-
-/// The guarded write. In order: refuse while the vendor app runs, check the mouse's status,
-/// send all packets (stopping at the first error, never retrying), then read the status back
-/// five times and stop at the first mismatch. Returns the number of packets sent.
-pub fn apply_settings<T: HidTransport, P: ProcessChecker>(
+/// Everything that must pass before the first packet goes out. Sends nothing.
+fn checks_before_send<T: HidTransport, P: ProcessChecker>(
     transport: &mut T,
     process_checker: &P,
     rate: PollingRate,
     dpi: Option<&DpiSettings>,
     lighting: Option<&LightingSettings>,
-) -> Result<usize, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     // (a) Refuse if vendor application is running
     let conflicting = process_checker.is_process_running(&["Gaming Mouse 3.0.exe", "CB Spectrum Gaming Mouse"]);
     if let Some(proc) = conflicting {
@@ -640,7 +545,25 @@ pub fn apply_settings<T: HidTransport, P: ProcessChecker>(
     }
 
     // Generate packets
-    let packets = generate_packets(rate, dpi, lighting)?;
+    generate_packets(rate, dpi, lighting)
+}
+
+/// Starts every error returned before the first packet is sent. The app uses it to tell
+/// "nothing was written" from "the write failed part-way" without matching message text.
+pub const NOT_SENT_PREFIX: &str = "NOT_SENT: ";
+
+/// The guarded write. In order: refuse while the vendor app runs, check the mouse's status,
+/// send all packets (stopping at the first error, never retrying), then read the status back
+/// five times and stop at the first mismatch. Returns the number of packets sent.
+pub fn apply_settings<T: HidTransport, P: ProcessChecker>(
+    transport: &mut T,
+    process_checker: &P,
+    rate: PollingRate,
+    dpi: Option<&DpiSettings>,
+    lighting: Option<&LightingSettings>,
+) -> Result<usize, String> {
+    let packets = checks_before_send(transport, process_checker, rate, dpi, lighting)
+        .map_err(|e| format!("{}{}", NOT_SENT_PREFIX, e))?;
 
     // (c) Transmit stream with gap rules
     let mut sent_count = 0;
@@ -689,40 +612,122 @@ pub fn apply_settings_ipc(
     dpi: Option<([u32; 6], u8)>,
     lighting: Option<LightingSettings>,
 ) -> Result<usize, String> {
+    let not_sent = |e: String| format!("{}{}", NOT_SENT_PREFIX, e);
     if let Some(l) = &lighting {
-        l.validate()?;
+        l.validate().map_err(not_sent)?;
     }
-    let rate = PollingRate::from_hz(polling_hz)?;
+    let rate = PollingRate::from_hz(polling_hz).map_err(not_sent)?;
     let dpi = match dpi {
-        Some((values, active)) => Some(DpiSettings::from_dpi_values(values, active)?),
+        Some((values, active)) => Some(DpiSettings::from_dpi_values(values, active).map_err(not_sent)?),
         None => None,
     };
     with_hid(true, |api| {
         let dev_list: Vec<_> = api.device_list().collect();
-        let validated_path = resolve_target_device_path(&dev_list, requested_path)?;
-        let c_path = std::ffi::CString::new(validated_path).map_err(|e| format!("Invalid device path: {}", e))?;
-        let dev = api.open_path(&c_path).map_err(|e| format!("Failed to open HID device: {}", e))?;
+        let validated_path = resolve_target_device_path(&dev_list, requested_path).map_err(not_sent)?;
+        let c_path = std::ffi::CString::new(validated_path).map_err(|e| not_sent(format!("Invalid device path: {}", e)))?;
+        let dev = api.open_path(&c_path).map_err(|e| not_sent(format!("Failed to open HID device: {}", e)))?;
         let mut transport = RealHidTransport { device: &dev };
         apply_settings(&mut transport, &SystemProcessChecker, rate, dpi.as_ref(), lighting.as_ref())
-    })
-}
-
-/// Helper for Tauri IPC invocation: Rust finds and validates the device itself.
-pub fn apply_polling_ipc(requested_path: Option<&str>, rate_hz: u32) -> Result<usize, String> {
-    let rate = PollingRate::from_hz(rate_hz)?;
-    with_hid(true, |api| {
-        let dev_list: Vec<_> = api.device_list().collect();
-        let validated_path = resolve_target_device_path(&dev_list, requested_path)?;
-        let c_path = std::ffi::CString::new(validated_path).map_err(|e| format!("Invalid device path: {}", e))?;
-        let dev = api.open_path(&c_path).map_err(|e| format!("Failed to open HID device: {}", e))?;
-        let mut transport = RealHidTransport { device: &dev };
-        apply_polling(&mut transport, &SystemProcessChecker, rate)
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test doubles live here so they are not compiled into the app.
+    #[derive(Debug, Clone)]
+    pub struct MockDeviceDescriptor {
+        pub vendor_id: u16,
+        pub product_id: u16,
+        pub usage_page: u16,
+        pub path: String,
+    }
+
+    impl DeviceDescriptor for MockDeviceDescriptor {
+        fn vendor_id(&self) -> u16 {
+            self.vendor_id
+        }
+        fn product_id(&self) -> u16 {
+            self.product_id
+        }
+        fn usage_page(&self) -> u16 {
+            self.usage_page
+        }
+        fn path_str(&self) -> String {
+            self.path.clone()
+        }
+    }
+
+    pub struct MockTransport {
+        pub sent_packets: Vec<Vec<u8>>,
+        pub get_feature_responses: Vec<Vec<u8>>,
+        pub get_feature_calls: usize,
+        pub fail_at_send_index: Option<usize>,
+    }
+
+    impl MockTransport {
+        pub fn new() -> Self {
+            Self {
+                sent_packets: Vec::new(),
+                get_feature_responses: Vec::new(),
+                get_feature_calls: 0,
+                fail_at_send_index: None,
+            }
+        }
+
+        pub fn with_default_response(payload: Vec<u8>) -> Self {
+            let mut m = Self::new();
+            m.get_feature_responses.push(payload);
+            m
+        }
+    }
+
+    impl Default for MockTransport {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl HidTransport for MockTransport {
+        fn send_feature_report(&mut self, data: &[u8]) -> Result<(), String> {
+            if let Some(idx) = self.fail_at_send_index {
+                if self.sent_packets.len() == idx {
+                    return Err("Simulated OS write failure: Windows error 31 (ERROR_GEN_FAILURE)".to_string());
+                }
+            }
+            self.sent_packets.push(data.to_vec());
+            Ok(())
+        }
+
+        fn get_feature_report(&mut self, _report_id: u8, buf: &mut [u8]) -> Result<usize, String> {
+            let resp = if !self.get_feature_responses.is_empty() {
+                let idx = self.get_feature_calls.min(self.get_feature_responses.len() - 1);
+                self.get_feature_responses[idx].clone()
+            } else {
+                vec![0x07, 0x00, 0x68, 0x09, 0x54, 0x00, 0x03, 0xAB, 0xA2]
+            };
+            self.get_feature_calls += 1;
+            let copy_len = buf.len().min(resp.len());
+            buf[..copy_len].copy_from_slice(&resp[..copy_len]);
+            Ok(copy_len)
+        }
+    }
+
+    pub fn generate_polling_packets(
+        target_rate: PollingRate,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        generate_packets(target_rate, None, None)
+    }
+
+    /// Guarded polling-rate-only write. Same checks as `apply_settings`.
+    pub fn apply_polling<T: HidTransport, P: ProcessChecker>(
+        transport: &mut T,
+        process_checker: &P,
+        rate: PollingRate,
+    ) -> Result<usize, String> {
+        apply_settings(transport, process_checker, rate, None, None)
+    }
 
     struct TestProcChecker {
         running: Option<String>,
@@ -787,7 +792,9 @@ mod tests {
 
         let res = apply_polling(&mut transport, &checker, PollingRate::Hz500);
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("Gaming Mouse 3.0.exe"));
+        let err = res.unwrap_err();
+        assert!(err.contains("Gaming Mouse 3.0.exe"));
+        assert!(err.starts_with(NOT_SENT_PREFIX), "Refusals must be marked as not sent: {}", err);
         assert_eq!(transport.sent_packets.len(), 0, "Zero packets sent if vendor app running");
     }
 
@@ -845,6 +852,7 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.contains("packet #50"), "Error must cite 1-based packet index: {}", err);
+        assert!(!err.starts_with(NOT_SENT_PREFIX), "A failure after sending began must not be marked as not sent: {}", err);
         assert_eq!(transport.sent_packets.len(), 49, "Must stop immediately at packet #50 without sending further");
     }
 

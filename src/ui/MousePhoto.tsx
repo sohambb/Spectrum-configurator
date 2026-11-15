@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { RgbConfig } from '../types/config';
 import { previewLook } from '../protocol/lighting';
-import { MouseArt } from './MouseArt';
 
 /*
  * The real mouse photo with live lighting. Three layers share one size:
@@ -12,7 +11,6 @@ import { MouseArt } from './MouseArt';
 const SPEED_SECONDS = [6, 4.5, 3, 2.1, 1.4];
 
 export const MousePhoto: React.FC<{ rgb: RgbConfig }> = ({ rgb }) => {
-  const [missing, setMissing] = useState(false);
   const look = previewLook(rgb);
   const solidColor = rgb.color;
   const style = {
@@ -22,18 +20,10 @@ export const MousePhoto: React.FC<{ rgb: RgbConfig }> = ({ rgb }) => {
     '--dir': rgb.direction === 'counter-clockwise' ? 'reverse' : rgb.direction === 'two-way' ? 'alternate' : 'normal',
   } as React.CSSProperties;
 
-  if (missing) {
-    return (
-      <div className="photo">
-        <div className="photo-art"><MouseArt rgb={rgb} /></div>
-      </div>
-    );
-  }
-
   return (
     <div className={`photo look-${look}`} style={style}>
       <div className="light light-edge" aria-hidden="true"><div className="light-fill" /></div>
-      <img className="photo-img" src="/mouse.png" alt="Cosmic Byte Spectrum mouse" draggable={false} onError={() => setMissing(true)} />
+      <img className="photo-img" src="/mouse.png" alt="Cosmic Byte Spectrum mouse" draggable={false} />
       <div className="light light-logo" aria-hidden="true"><div className="light-fill" /></div>
     </div>
   );
